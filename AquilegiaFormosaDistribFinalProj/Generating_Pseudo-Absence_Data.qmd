@@ -1,0 +1,266 @@
+---
+title: "Generating Pseudo-Absences"
+author: "Mia Huebner"
+format: html
+editor: visual
+---
+
+## Generating the Pseudo-Absences
+
+To perform the Species Distribution Model (SDM), data about the presence (1) and absence (0) of a species needs to be included in the data set. Since there is only data on where *Aquilegia formosa* has been found, the pseudo-absence data needs to be generated. In order generate this data, I followed the workflow outlined by Damaris Zurrell in 2022.
+
+Load in the libraries:
+
+```{r}
+library(terra)
+library(sf)
+library(dplyr)
+library(geodata)
+```
+
+Load in the species data:
+
+```{r}
+B_Data <- "https://raw.githubusercontent.com/MiaHuebner/Aquilegia-Distribution-Final-Project/refs/heads/main/Aquilegia_Data_x_World_Clim_Data.txt"
+
+Aquilegia_Data <- read.table(B_Data, header = TRUE, sep = "\t")
+```
+
+Generate a mask of North America (please change the temporary directory path):
+
+```{r}
+North_America_Boundary <- geodata::gadm(
+  country = c("USA", "Canada", "Mexico"), 
+  level = 0, 
+  path = tempdir('C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj')
+)
+
+raster_of_the_three <- rast(
+  ext(North_America_Boundary), 
+  resolution = 0.5, 
+  crs = crs(North_America_Boundary)
+)
+
+mask <- rasterize(North_America_Boundary, raster_of_the_three)
+NA_coords <- ext(-175, -50, 5, 90)
+mask <- crop(mask, NA_coords)
+
+plot(mask)
+```
+
+Convert the Aquilegia_Data object into an sf object:
+
+```{r}
+Aquilegia_Distribution_sf <- sf::st_as_sf(Aquilegia_Data, 
+                                          coords = c("decimalLongitude","decimalLatitude"), 
+                                      crs = crs(mask))
+```
+
+Extract the coordinates of the points where the *Aquilegia formosa* are present:
+
+```{r}
+presence_coordinates <- sf::st_coordinates(Aquilegia_Distribution_sf)
+```
+
+Generate 1750 random pseudo-absence points in the mask region. I used 1750 as this was the maximum number of points that R would let me generate given the buffer area defined later in the workflow:
+
+```{r}
+bg_rand <- terra::spatSample(
+  mask, 1750, "random", 
+  na.rm = TRUE, as.points = TRUE)
+
+plot(mask, col = 'grey', legend = FALSE) 
+points (bg_rand, pch = 14, cex = 0.4)
+points (presence_coordinates, pch = '+', col = 'red3')
+```
+
+Make sure to not allow it to sample any points where *Aquilegia formosa* is present by first making a new mask that contains NAs at the coordinates they are found:
+
+```{r}
+formosa_cells <- terra::extract(mask, 
+                           presence_coordinates, 
+                           cells = TRUE)$cell
+
+na_presence_mask <- mask
+values(na_presence_mask)[formosa_cells] <- NA
+```
+
+Now, randomly select the background data, exclude the presence locations:
+
+```{r}
+bg_rand_exclp <- terra::spatSample(na_presence_mask, 
+                                   1750, 
+                                   "random", 
+                                   na.rm = TRUE, 
+                                   as.points = TRUE)
+
+plot(mask, col = 'grey', legend = FALSE)
+points(presence_coordinates, pch = '+', col = 'red3')
+points(bg_rand_exclp, pch = 14, cex = 0.4)
+```
+
+Define the range of *Aquilegia formosa* in order to only generate pseudo-absence points within that range as *Aquilegia formosa* is not found throughout all of the US, Canada, and Mexico.
+
+```{r}
+e <- ext(-155, -108, 29, 66)
+```
+
+Repeat the above steps, adding in the extra extent variable into the sampling requirements and highlight the new sampling range:
+
+```{r}
+bg_rand_exclp_e <- terra::spatSample(na_presence_mask, 
+                                   1750, 
+                                   "random", 
+                                   na.rm = TRUE, 
+                                   as.points = TRUE, 
+                                   ext = e)
+
+plot(mask, col = 'grey', legend = FALSE)
+points(presence_coordinates, pch = '+', col = 'red3')
+points(bg_rand_exclp_e, pch = 14, cex = 0.4)
+lines(e, col = 'red3')
+```
+
+Since *Aquilegia formosa* will likely not be dispersed evenly throughout the new extent, but rather in a sort of buffer zone, I'm going to create a buffer around the presence data to generate the pseudo-absence points.
+
+Start by creating a SpatVector object of the known occurrences:
+
+```{r}
+Aq_form <- terra::vect(as.matrix(presence_coordinates), crs = crs(mask))
+```
+
+Place a buffer of 150 km radius around the presence points:
+
+```{r}
+v_buf <- terra::buffer(Aq_form, width = 150000)
+```
+
+Set all raster cells outside the buffer to NA:
+
+```{r}
+region_buff <- terra::mask(mask, v_buf)
+```
+
+Now, repeat the steps above, adding in the buffer variable to the sampling requirements and plot:
+
+```{r}
+bg_rand_buff <- terra::spatSample(region_buff,
+                                  1750, 
+                                  "random", 
+                                  na.rm = TRUE,
+                                  as.points = TRUE)
+
+plot(mask, col = 'grey', legend = FALSE)
+points(presence_coordinates, pch = '+', col = 'red3')
+points(bg_rand_buff, pch = 14, cex = 0.4)
+```
+
+Now, the pseudo-absence data is generated! Make sure the points are saved, with their coordinates, as 0's to indicate an absence.
+
+Change the generated data into a data frame:
+
+```{r}
+bg_rand_buff_df <- terra::as.data.frame(
+  terra::geom(bg_rand_buff)[, c('x', 'y')])
+
+summary(bg_rand_buff_df)
+```
+
+Make sure the column names are the same as those in the data set with the presence data:
+
+```{r}
+names(bg_rand_buff_df) <- c('decimalLongitude', 'decimalLatitude')
+```
+
+Add a column for occurrences and assign 0 for all of its values to indicate absences:
+
+```{r}
+bg_rand_buff_df$presence <- 0 
+
+summary(bg_rand_buff_df)
+```
+
+Extract the WorldClim bio data for the pseudo-absence points:
+
+Start by putting the data into a vector:
+
+```{r}
+pseudo_absence_coords <- data.frame(
+  Longitude = c(bg_rand_buff_df$decimalLongitude), 
+  Latitude = c(bg_rand_buff_df$decimalLatitude)
+)
+
+pseudo_absence_coords_vector <- vect(pseudo_absence_coords, 
+                                     geom = c("Longitude", "Latitude"), 
+                                     crs = crs(mask))
+```
+
+Access the current WorldClim data:
+
+```{r}
+Global_Current_Data <- worldclim_global(
+  var = 'bio', 
+  res = 5, 
+  path = 'C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj/CurrentWorldClim', #Change this line of code to download the data onto your own computer 
+  download = FALSE)[[c(2, 5, 14)]]
+```
+
+Extract the current WorldClim data:
+
+```{r}
+pseudo_absence_current_bio <- terra::extract(Global_Current_Data, pseudo_absence_coords_vector)
+plot(pseudo_absence_current_bio)
+```
+
+Access the future WorldClim data:
+
+```{r}
+US_Cnda_Mxco_Bio_Future_Data <- cmip6_world(
+  lon = -131.5,
+  lat = 46.5,
+  var = 'bioc',
+  ssp = 245,
+  res = 5, 
+  rcp = 45, 
+  model = 'CanESM5', 
+  time = "2021-2040", 
+  path = 'C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj', 
+  download = FALSE)[[c(2, 5, 14)]]
+```
+
+Extract the future WorldClim data:
+
+```{r}
+pseudo_absence_future_bio <- terra::extract(US_Cnda_Mxco_Bio_Future_Data, pseudo_absence_coords_vector)
+
+plot(pseudo_absence_future_bio)
+```
+
+Add the extracted values to the pseudo-absence data:
+
+```{r}
+pseudo_current_file <- cbind(pseudo_absence_coords, pseudo_absence_current_bio)
+pseudo_current_file <- cbind(pseudo_current_file, pseudo_absence_future_bio)
+
+summary(pseudo_current_file)
+```
+
+Create a column for the collection year and input 2024. This will come in handy during the species distribution general linear model when looking at only observations from the past year:
+
+```{r}
+pseudo_current_file$year <- 2024
+
+print(pseudo_current_file)
+```
+
+Now, save the pseudo-absence data file as a CSV.
+
+```{r}
+write.csv(pseudo_current_file, "pseudo-absence data", row.names = TRUE)
+```
+
+Once the data is in CSV format, I used excel to easily combine the pseudo-absence data with the presence data set. I used excel as it was easier to combine the data since there are some variables that are missing from the pseudo-absence set that are present in the presence data set, the columns have different names, and are in different orders between the two data sets. The combined data set will be used for further analysis.
+
+Again, this code was adapted from Damaris Zurrell's 2022 github found at:
+
+Zurrell, D. (2022). *Pseudo-absence and background data \[Software\]*. GitHub. https://damariszurell.github.io/EEC-MGC/b5_pseudoabsence.html

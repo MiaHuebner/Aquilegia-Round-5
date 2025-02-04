@@ -1,0 +1,118 @@
+---
+title: "Spatial Block Tile Generation"
+author: "Mia Huebner"
+format: html
+editor: visual
+---
+
+## Spatial Block Tile Generation
+
+(Spatial) Block cross validation will be performed to assess how well the model fits the data. For this assessment, however, I need to create the spatial block tiles. I was able to do this through CRAN's documentation on the blockCV package (Valavi et al., 2024).
+
+Load in the necessary libraries:
+
+```{r}
+library(blockCV)
+library(sf)
+library(terra)
+library(geodata)
+```
+
+Load in the raster data of the Aquilegia distribution:
+
+```{r}
+C_Data <- "https://raw.githubusercontent.com/MiaHuebner/Aquilegia-Distribution-Final-Project/refs/heads/main/Use_This_Data_For_Block_Generation.txt"
+
+Tile_Generation_Data <- read.table(C_Data, header = TRUE, sep = "\t")
+Tile_Generation_Data_df <- data.frame(Tile_Generation_Data)
+```
+
+Change the data into a spatial object:
+
+```{r}
+Aquilegia_species_data <- sf::st_as_sf(Tile_Generation_Data_df, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+```
+
+Add the environmental predictors as a raster, this code is taken from my SDM analysis:
+
+```{r}
+Global_Current_Data <- worldclim_global(
+  var = 'bio', 
+  res = 5, 
+  path = 'C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj/CurrentWorldClim', #Change this line of code to download the data onto your own computer 
+  download = FALSE)[[c(2, 5, 14)]]
+
+summary(Global_Current_Data)
+
+North_America_Boundary <- geodata::gadm(
+  country = c("USA", "Canada", "Mexico"), 
+  level = 0, 
+  path = tempdir('C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj')
+)
+
+raster_of_the_three <- rast(
+  ext(North_America_Boundary), 
+  resolution = 0.5, 
+  crs = crs(North_America_Boundary)
+)
+
+mask <- rasterize(North_America_Boundary, raster_of_the_three)
+NA_coords <- ext(-175, -50, 5, 90)
+mask <- crop(mask, NA_coords)
+
+Aquilegia_Range_Longitude <- -155:-108
+Aquilegia_Range_Latitude <- 29:66
+Aquilegia_Range <- terra::ext(min(Aquilegia_Range_Longitude), max(Aquilegia_Range_Longitude),
+                          min(Aquilegia_Range_Latitude), max(Aquilegia_Range_Latitude))
+
+Current_Bio <- crop(Global_Current_Data, Aquilegia_Range)
+Current_Bio <- project(Current_Bio, mask)
+Current_Bio <- resample(Current_Bio, mask)
+Current_Bio <- mask(Current_Bio, mask)
+names(Current_Bio) <- c('Current.Mean.Diurnal.Range..Bio.2.', 'Current.Max..Temp..of.Warmest.Month..Bio.5.', 
+                        'Current.Driest.Month.Precipitation.Data..Bio.14.')
+
+Current_Bio[[1]] <- Current_Bio[[1]]/10
+Current_Bio[[2]] <- Current_Bio[[2]]/10
+
+
+```
+
+Now, define the spatial blocks, I used 420 kilometers as the block range because it made 8 blocks fit into the mask frame well:
+
+```{r}
+spatial_blocks <- blockCV::spatialBlock(
+  speciesData = Aquilegia_species_data, 
+  rasterLayer = Current_Bio, 
+  theRange = 420000,
+  k = 8,
+  selection = "random", 
+  iteration = 50, 
+  biomod2Format = TRUE, 
+  xOffset = 0, 
+  yOffset =0
+)
+```
+
+It says that the function is deprecated, and to use cv_spatial instead, however, the blocks are still generated well, so I ignored this message.
+
+Now, add fold assignments to the Aquilegia data:
+
+```{r}
+Aquilegia_species_data$blockCV_tile <- spatial_blocks$blockCV_tile
+```
+
+Change the data back into a dataframe, then save it as a CSV file:
+
+```{r}
+Aquilegia_species_df <- data.frame(Aquilegia_species_data)
+Aquilegia_species_df
+
+write.csv(Aquilegia_species_data, "BlockCVInfo", row.names = TRUE)
+```
+
+Generating the spatial blocks was a lot less painful than generating the pseudo-absence data! After the spatial block generation, I used excel to double check the file and make sure all necessary data was present.
+
+Again, I was able to generate this data through the blockCV package documentation available on CRAN at https://cran.r-project.org/web/packages/blockCV/vignettes/tutorial_2.html, but from Valavi et al. 2019:
+
+Valavi R, Elith J, Lahoz-Monfort JJ, Guillera-Arroita G (2019). "blockCV: An R package for generating spatially or environmentally separated folds for k-fold cross-validation of species distribution models." *Methods in Ecology and Evolution*, **10**(2), 225-232. [doi:10.1111/2041-210X.13107](https://doi.org/10.1111/2041-210X.13107)

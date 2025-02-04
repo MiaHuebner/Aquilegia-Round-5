@@ -1,0 +1,538 @@
+---
+title: "SDM Analysis!"
+author: "Mia Huebner"
+format: html
+editor: visual
+---
+
+## SDM Analysis!
+
+With the the initial idea of the distribution of *Aquilegia formosa,* along with the generated pseudo-absence points, and the spatial blocks, the spatial distribution model analysis can begin! This workflow is adapted from Damaris Zurrell's 2020 "Introduction to species distribution modelling (SDM) in R". In this workflow, however, the 'geodata' package is used to access WorldClim data as well as the 'terra' package intead of 'raster'.
+
+As always, start by loading your libraries, I used a LOT for this one:
+
+```{r}
+library(geodata)
+library(dplyr)
+library(terra)
+library(devtools)
+library(mecofun)
+library(randomForest)
+library(brglm2)
+library(RColorBrewer)
+library(lattice)
+library(sf)
+library(tmap)
+library(blockCV)
+library(curl)
+```
+
+Now, load in the necessary data, starting with the WorldClim data. The data I specifically wanted to download were Bio 2, 5, and 14. Bio 2 is the mean diurnal range, which is the difference between the maximum temperature and the minimum temperature in a month. Bio 5 is the current maximum temperature of the warmest month, and Bio 14 is the precipitation data of the driest month. These variables were chosen as *Aquilegia formosa* is not drought resistant and is also negatively affected by high temperatures.
+
+In this code block, make sure to change the pathway to a place in your computer, and switch the download to TRUE! :
+
+```{r}
+Global_Current_Data <- worldclim_global(
+  var = 'bio', 
+  res = 5, 
+  path = 'C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj/CurrentWorldClim', #Change this line of code to download the data onto your own computer 
+  download = FALSE)[[c(2, 5, 14)]]
+
+summary(Global_Current_Data)
+```
+
+Now, load in the future climate projections according to the Canadian Earth System Model (CanESM5). This model works well with extreme precipitation and temperature values, which is somewhat common in mountainous regions (where *Aquilegia formosa* is found). It also uses a lower resolution, which is good considering the large area in this analysis. The "ssp = 245" section of the code represents a middle socioeconomic pathway, gathering data assuming that moderate efforts are taken to reduce emissions, however there will still be significant climate change by 2100. The projected findings will reflect the 2021-2040 time period. For both the current and future climate data, the second lowest resolution (5) was chosen.
+
+Again, make sure to change the pathway to a place in your computer, and switch the download to TRUE! :
+
+```{r}
+US_Cnda_Mxco_Bio_Future_Data <- cmip6_world(
+  lon = -131.5,
+  lat = 46.5,
+  var = 'bioc',
+  ssp = 245,
+  res = 5, 
+  rcp = 45, 
+  model = 'CanESM5', 
+  time = "2021-2040", 
+  path = 'C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj', 
+  download = FALSE)[[c(2, 5, 14)]]
+
+summary(US_Cnda_Mxco_Bio_Future_Data)
+```
+
+Load in the *Aquilegia formosa* dataset:
+
+```{r}
+Data_D <- "https://raw.githubusercontent.com/MiaHuebner/Aquilegia-Distribution-Final-Project/refs/heads/main/Final_SDM_Data_Complete.txt"
+
+Final_SDM_Data_Complete <- read.table(Data_D, header = TRUE, sep = "\t")
+Aquilegia_df <- data.frame(Final_SDM_Data_Complete)
+```
+
+Now, generate a background map of the US, Canada, and Mexico.
+
+Again, make sure to change the pathway to a place in your computer! :
+
+```{r}
+North_America_Boundary <- geodata::gadm(
+  country = c("USA", "Canada", "Mexico"), 
+  level = 0, 
+  path = tempdir('C:/Users/Mia/OneDrive/Desktop/RWorkPLUS/GISR/FinalProject/AquilegiaFormosaDistribFinalProj')
+)
+```
+
+Now, create an empty raster with the extent of US, Canada, and Mexico:
+
+```{r}
+raster_of_the_three <- rast(
+  ext(North_America_Boundary), 
+  resolution = 0.5, 
+  crs = crs(North_America_Boundary)
+)
+```
+
+Create a mask:
+
+```{r}
+mask <- rasterize(North_America_Boundary, raster_of_the_three)
+NA_coords <- ext(-175, -50, 5, 90)
+mask <- crop(mask, NA_coords)
+```
+
+Crop the WorldClim data to only the areas Aquilegia is found by first setting the range of *Aquilegia formosa:*
+
+```{r}
+Aquilegia_Range_Longitude <- -155:-108
+Aquilegia_Range_Latitude <- 29:66
+Aquilegia_Range <- ext(min(Aquilegia_Range_Longitude), 
+                       max(Aquilegia_Range_Longitude),
+                       min(Aquilegia_Range_Latitude), 
+                       max(Aquilegia_Range_Latitude))
+```
+
+Now, first focus on the current climate data. Make sure it is projected to the North American coordinate system and focused on the US, Canada, and Mexico:
+
+```{r}
+Current_Bio <- crop(Global_Current_Data, Aquilegia_Range)
+Current_Bio <- project(Current_Bio, mask)
+Current_Bio <- resample(Current_Bio, mask)
+Current_Bio <- mask(Current_Bio, mask)
+names(Current_Bio) <- c('Current.Mean.Diurnal.Range..Bio.2.', 
+                        'Current.Max..Temp..of.Warmest.Month..Bio.5.', 
+                        'Current.Driest.Month.Precipitation.Data..Bio.14.'
+)
+```
+
+The temperature values are multiplied by 10 in WorldClim, so let's change them back to normal Celsius:
+
+```{r}
+Current_Bio[[1]] <- Current_Bio[[1]]/10
+Current_Bio[[2]] <- Current_Bio[[2]]/10
+```
+
+Let's see how the current data look:
+
+```{r}
+plot(Current_Bio,ext = Aquilegia_Range)
+```
+
+Repeat the steps that were just executed for the current climate data for the future climate data:
+
+```{r}
+Future_Bio <- crop(US_Cnda_Mxco_Bio_Future_Data, Aquilegia_Range)
+Future_Bio <- project(Future_Bio, mask)
+Future_Bio <- resample(Future_Bio, mask)
+Future_Bio <- mask(Future_Bio, mask)
+names(Future_Bio) <- c('Current.Mean.Diurnal.Range..Bio.2.', 'Current.Max..Temp..of.Warmest.Month..Bio.5.', 
+                       'Current.Driest.Month.Precipitation.Data..Bio.14.')
+Future_Bio[[1]] <- Future_Bio[[1]]/10
+Future_Bio[[2]] <- Future_Bio[[2]]/10
+Future_Bio[[3]] <- Future_Bio[[3]]/10
+
+plot(Future_Bio, ext = Aquilegia_Range)
+
+```
+
+Cool! The current versus the future climate projections look very similar, this could be due to the time frame chosen for the future projections (2021-2040). This could also be due to choosing a moderate societal emission prediction (ssp = 245).
+
+Let's continue with the analysis.
+
+Since the data set is so large, let's only focus on observations collected in the last year (2023 or more recent). This should help with the model fitting as only 1750 pseudo-absences were generated.
+
+```{r}
+LastYearData <- Aquilegia_df |> 
+  dplyr::filter(year >= 2023)
+  
+LastYearData_df <- data.frame(LastYearData)
+```
+
+For this species distribution model analysis, I am using the Generalized Linear Model (GLM). This model is one of the most common models in species distribution modelling and is relatively simple. It does, however, require absence data, which is why pseudo-absence data was generated through a different workflow. When performing this model, watch for multi-colinearity issues that can arise. To check if this would be an issue, I referenced a table with r correlation coefficients (Pearson correlation coefficient) between the different Bioclimatic data sets provided by WorldClim (Kumari et al., 2022). If r \> 0.7 between any combination of the bioclimatic variables, multi-colinearity would have been an issue, however, r \<\< 0.7 for all combinations of Bio 2, 5, and 14.
+
+Let's begin by fitting the model to the data by just using the basic glm() function:
+
+```{r}
+m_glm <- glm(presence ~ 
+               Current.Mean.Diurnal.Range..Bio.2. + I(Current.Mean.Diurnal.Range..Bio.2.^2) + 
+               Current.Max..Temp..of.Warmest.Month..Bio.5. + I(Current.Max..Temp..of.Warmest.Month..Bio.5.^2) + 
+               Current.Driest.Month.Precipitation.Data..Bio.14. + I(Current.Driest.Month.Precipitation.Data..Bio.14.^2), 
+             family = "binomial", 
+             data = LastYearData_df) 
+summary(m_glm)
+```
+
+It didn't converge :(. Let's try using the "brglmfit" method to coerce the data to fit the model a little better:
+
+```{r}
+modeltry89 <- glm(presence ~ 
+                    Current.Mean.Diurnal.Range..Bio.2. + I(Current.Mean.Diurnal.Range..Bio.2.^2) + 
+                    Current.Max..Temp..of.Warmest.Month..Bio.5. + I(Current.Max..Temp..of.Warmest.Month..Bio.5.^2) + 
+                    Current.Driest.Month.Precipitation.Data..Bio.14. + I(Current.Driest.Month.Precipitation.Data..Bio.14.^2), 
+                  family = "binomial", 
+                  data = LastYearData_df, 
+                  method = "brglmFit")
+
+summary(modeltry89)
+```
+
+Nice! Now the model converges. Let's move to plotting the partial response curves of the model
+
+If you do not have the mecofun package, you can install it through:
+
+```{r}
+devtools::install_git("https://gitup.uni-potsdam.de/macroecology/mecofun.git")
+```
+
+First, name the variables:
+
+```{r}
+pred <- c('Current.Mean.Diurnal.Range..Bio.2.', 
+          'Current.Max..Temp..of.Warmest.Month..Bio.5.', 
+          'Current.Driest.Month.Precipitation.Data..Bio.14.')
+```
+
+We want to view the curves next to each other, so set three panels next to each other:
+
+```{r}
+par(mfrow = c(1,3))
+```
+
+Now, plot the partial responses for both the m_glm model, which does not converge, AND the modeltry89 which DOES converge:
+
+```{r}
+partial_response(m_glm, predictors = LastYearData_df[, pred])
+```
+
+```{r}
+partial_response(modeltry89, 
+                 predictors = LastYearData_df[, pred],
+                 ylim = c(0, 170))
+```
+
+Both models generate sharp, disconnected partial response curves. To try to troubleshoot this during my analysis, I tried different "Bio" variable combinations from WorldClim, including the combinations of Bio (2, 5, 11), (5, 11, 14), (2, 11, 14), and (2, 5, 11), however each combination looked either worse or the same. Then, thinking it was an over-complication of the model, I simplified it by removing the second square term in the series (I(xxxBio.n\^2), however that still did not fix the issue. After trying these different methods to improve the partial response curves, I decided to continue the analysis anyways.
+
+Concerning both models, when looking at the partial response curves, even though the m_glm model does not converge, it still appears to fit the data better than the modeltry89 model that does converge. With this in mind, I chose to switch to the non-convergent m_glm for futher analysis.
+
+Looking at the response surfaces/inflated response curves can provide insight between the interaction between a species and its environment at certain environmental conditions better than simply looking at the partial response curves. Now, let's move to generating the response surfaces of the partial response curves. Start by preparing a dummy data set, keeping two predictor variables ranging from their minimums to maximums, while holding the third predictor constant at its mean. For this, I ranged climatic variables 2 and 5, and held bio 14 constant at its mean:
+
+```{r}
+wxz <- data.frame(
+  expand.grid(
+    seq(min(LastYearData_df[, pred[1]]),
+        max(LastYearData_df[, pred[1]]),
+        length = 50),
+    seq(min(LastYearData_df[, pred[2]]), 
+        max(LastYearData_df[, pred[2]]),
+        length = 50), 
+    mean(LastYearData_df[, pred[3]])
+  )
+)
+
+names(wxz) <- pred
+```
+
+Now, make the predictions:
+
+```{r}
+wxz$z <- predict(m_glm, wxz, type = 'response')
+summary(wxz)
+```
+
+Create a color scale for the 3D visualization:
+
+```{r}
+cls <- colorRampPalette(rev(
+  brewer.pal(11, 'RdYlBu')))(100)
+```
+
+Now, plot the 3D surface:
+
+```{r}
+wireframe(z ~ Current.Mean.Diurnal.Range..Bio.2. + Current.Max..Temp..of.Warmest.Month..Bio.5., 
+          data = wxz, 
+          zlab = list("Occurrence Probability", rot = 90), 
+          drape = TRUE, 
+          col.regions = cls,
+          scales = list(arrows = FALSE), 
+          zlim = c(0,1), 
+          main = 'GLM', 
+          xlab = 'bio_2', 
+          ylab = 'bio_5', 
+          screen = list(z = 120, x = -70, y = 3))
+
+```
+
+This is a steep response surface.
+
+Plot the inflated response curves of this surface now:
+
+```{r}
+par(mfrow = c(1,3))
+inflated_response(m_glm, 
+                  predictors = LastYearData_df[, pred], 
+                  method = "stat6", 
+                  lwd = 3,
+                  main = 'GLM')
+
+```
+
+After creating the response surfaces, let's perform a Random forest (RF) analysis. Random forest analyses generate regression trees and then can average the results from these trees using bootstrap aggregation, estimating variable importance through a permutation procedure.
+
+Let's start the rf analysis by fitting the model:
+
+```{r}
+(m_rf <- randomForest(
+  x = LastYearData_df[, c('Current.Mean.Diurnal.Range..Bio.2.', 'Current.Max..Temp..of.Warmest.Month..Bio.5.', 
+                          'Current.Driest.Month.Precipitation.Data..Bio.14.')], 
+  y = LastYearData_df[, 'presence'], 
+  ntree = 500, 
+  nodesize = 10, 
+  importance = TRUE
+))
+m_rf
+```
+
+With this output, a high amount of variance is explained (99.97%). Let's now look at the variable importance:
+
+```{r}
+importance(m_rf, type = 1)
+```
+
+Plot!
+
+```{r}
+varImpPlot(m_rf)
+```
+
+It is clearly seen that the increase in mean square error (%IncMSE) is highest for the Bio 2 variable. This indicates that it is the more important variable when comparing to Bio 5 and Bio 14.
+
+Let's look at the single trees:
+
+```{r}
+head(getTree
+     (m_rf, 
+       1, 
+       TRUE))
+```
+
+To visually understand the model over the entire environment, let's again look at the partial response curves as well as 3D response surfaces.
+
+Plot the partial response curves again:
+
+```{r}
+par(mfrow = c(1, 3))
+partial_response(m_rf, 
+                 predictors = LastYearData_df[, pred], 
+                 main = 'Random Forest', 
+                 ylim = c(0, 0.6))
+```
+
+Plot the response surface:
+
+```{r}
+wxz$z <- predict(m_rf, wxz)
+
+cls <- colorRampPalette(rev(
+  brewer.pal(11, 'RdYlBu')))(100)
+
+wireframe(z ~ Current.Mean.Diurnal.Range..Bio.2. + Current.Max..Temp..of.Warmest.Month..Bio.5., 
+          data = wxz, 
+          zlab = list("Occurrence Probability", rot = 90), 
+          drape = TRUE, 
+          col.regions = cls, 
+          scales = list(arrows = FALSE), 
+          zlim = c(0, 1), 
+          main = 'Random Forest', 
+          xlab = 'Bio 2', 
+          ylab = 'Bio 5', 
+          screen = list(z = 120, x = -60, y = 3))
+```
+
+Plot the inflated response curves for the rf:
+
+```{r}
+par(mfrow = c(1, 3))
+inflated_response(m_rf, 
+                  predictors = LastYearData_df[, pred],
+                  method = "stat6", 
+                  lwd = 3, 
+                  main = 'Random Forest')
+```
+
+Now that the General Linearized Model and Random Forest Models are complete, assess how well the model predicts the occurrence. This is where the generated spatial block tiles come in! To assess the model's predictive ability, spatial block cross-validation predictions will be performed.
+
+Start with the cross-validation predictions for the GLM:
+
+```{r}
+crosspred_glm <- mecofun::crossvalSDM(
+  m_glm, 
+  traindat = LastYearData_df, 
+  colname_pred = pred, 
+  colname_species = "presence", 
+  kfold = LastYearData_df[!is.na(LastYearData_df$blockCV_tile), 'blockCV_tile']
+)
+```
+
+This warning is saying that the GLM did not converge and may cause issues later. As an attempt to avoid this warning, however, I did run the entire analysis again with the "brglm" GLM model that did converge. When running this with the "brglm" model, the code did not run and continued to give me an error that I could not find a way to avoid. Due to the data set and model fitting issues, this warning is accepted and noted for analyzing the results of the future distribution predictions.
+
+Now, move to the RF cross-validation predictions:
+
+```{r}
+crosspred_rf <- mecofun::crossvalSDM(
+  m_rf, 
+  traindat = LastYearData_df, 
+  colname_pred = pred, 
+  colname_species = "presence", 
+  kfold = LastYearData_df[!is.na(LastYearData_df$blockCV_tile), 'blockCV_tile']
+)
+```
+
+This code block also generates a warning, saying that five or fewer unique values are produced. Again, this warning was ignored and the regression was continued.
+
+Now, look at the correlation between the GLM and RF predictions:
+
+```{r}
+plot(crosspred_glm, crosspred_rf, pch = 19, col = 'grey35')
+```
+
+This shows a less than ideal correlation.
+
+Assess the cross-validated model performance by measuring the true skill statistic (TSS) along with a few other measures, while estimating an optimal threshold to make binary predictions. The threshold that's used maximizes the TSS.
+
+Perform this assessment for the GLM:
+
+```{r}
+(eval_glm <- mecofun::evalSDM(
+  observation = LastYearData_df[!is.na(LastYearData_df$blockCV_tile), 10], 
+  predictions = crosspred_glm
+))
+```
+
+Now for the RF:
+
+```{r}
+(eval_rf <- mecofun::evalSDM(
+  observation = LastYearData_df[!is.na(LastYearData_df$blockCV_tile), 10], 
+  predictions = crosspred_rf
+))
+```
+
+Now, combine the two SDM algorithm predictions to make an ensemble prediction by taking the median:
+
+```{r}
+combo_the_data <- data.frame(crosspred_glm, crosspred_rf)
+crosspred_ens <- apply(combo_the_data, 1, median)
+
+(eval_ens <- mecofun::evalSDM(
+  observation = LastYearData_df[!is.na(LastYearData_df$blockCV_tile), 10], 
+  predictions = crosspred_ens
+))
+```
+
+Note how all values are 1 or nearly 1.
+
+Finally, after fitting the SDMs, looking at their behavior, and how well they are able to predict future distributions, let's predict the future (2021-2040) distribution of *Aquilegia formosa* under the Canada Earth Systems Model!
+
+First, make predictions to the current climate:
+
+```{r}
+Current_Bio_df <- as.data.frame(Current_Bio, xy = TRUE)
+
+Current_Bio_df$pred_glm <- mecofun::predictSDM(m_glm, Current_Bio_df)
+
+Current_Bio_df$pred_rf <- mecofun::predictSDM(m_rf, Current_Bio_df)
+
+Current_Bio_df$pred_ens <- apply(Current_Bio_df[, c(1:5)], 1, median)
+
+```
+
+Make binary predictions:
+
+```{r}
+Current_Bio_df$bin_glm <- ifelse(Current_Bio_df$pred_glm > eval_glm$thresh, 1, 0)
+
+Current_Bio_df$bin_rf <- ifelse(Current_Bio_df$pred_rf > eval_rf$thresh, 1, 0) 
+
+Current_Bio_df$bin_ens <- ifelse(Current_Bio_df$pred_ens > eval_ens$thresh, 1, 0)
+```
+
+Make a raster stack of the predictions and plot!
+
+```{r}
+Raster_Current_Predictions <- rast(Current_Bio_df[, -c(3:5)], crs = "EPSG:4326")
+plot(Raster_Current_Predictions)
+```
+
+For the future projections, we need to first assess novel environments under the climate change projections set by the model. Since moderate emission paths as well as a near future time period were chosen for this analysis, few novel environments are predicted to appear.
+
+Assess novel environments:
+
+```{r}
+bio_fut_df <- as.data.frame(Future_Bio, xy = TRUE)
+```
+
+Values of 1 for the following mask indicate novel environments:
+
+```{r}
+bio_fut_df$eo_mask <- mecofun::eo_mask(
+  LastYearData_df[, pred], 
+  bio_fut_df[, pred])
+
+Raster_Future <- rast(bio_fut_df[, -c(3:5)], crs = "EPSG:4326")
+
+plot(Raster_Future, 
+     main = "Environmental Novelty")
+
+```
+
+Very few novel environments are predicted, however looking closely, there are a couple at around (52 North, 130 West).
+
+Now, make predictions to future climate:
+
+```{r}
+bio_fut_df$pred_glm <- mecofun::predictSDM(m_glm, bio_fut_df)
+
+bio_fut_df$pred_rf <- mecofun::predictSDM(m_rf, bio_fut_df)
+
+bio_fut_df$pred_ens <- apply(bio_fut_df[, -c(1:5)], 1, median)
+```
+
+Again, make binary predictions:
+
+```{r}
+bio_fut_df$bin_glm <- ifelse(bio_fut_df$pred_glm > eval_glm$thresh, 1, 0)
+
+bio_fut_df$bin_rf <- ifelse(bio_fut_df$pred_rf > eval_rf$thresh, 1, 0)
+
+bio_fut_df$bin_ens <- ifelse(bio_fut_df$pred_ens > eval_ens$thresh, 1, 0)
+```
+
+Visualize the predictions!
+
+```{r}
+
+```
+
+References:
+
+Kumari, P., Wani, I. A., Khan, S., Verma, S., Mushtaq, S., Gulnaz, A., & Paray, B. A. (2022). Modeling of Valeriana wallichii habitat suitability and niche dynamics in the Himalayan region under anticipated climate change. *Biology*, *11*(4), 498. https://doi.org/10.3390/biology11040498

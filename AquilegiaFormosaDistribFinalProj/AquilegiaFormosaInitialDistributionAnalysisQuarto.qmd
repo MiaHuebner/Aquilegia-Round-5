@@ -1,0 +1,330 @@
+---
+title: "Aquilegia formosa Initial Distribution Analysis"
+author: "Mia Huebner"
+format: html
+editor: visual
+---
+
+### *Aquilegia formosa* Initial Distribution Analysis
+
+The *Aquilegia* genus, or more commonly known as the Columbine, is a group of perennial flowers that are found worldwide. *Aquilegia* species have evolved modified petals, called spurs, which contain nectar. This modification has likely led to the recent adaptive radiation of the genus due to pollinator shifts. The recent rapid speciation, interesting floral morphology, and pollinator diversity has made *Aquilegia* species model organisms to study a variety of ecological processes. In light of the rapidly changing climate, however, how will the distribution of *Aquilegia* species change?
+
+In an attempt to look at this issue, I will perform a Species Distribution Model (SDM) for *Aquilegia formosa,* or more commonly known as Western Columbine.
+
+This part of the report will serve as an introduction to the data. It'll begin with using the leaflet package to generate an interactive map of the distribution of the species, then move into mapping the elevation of the areas within the range of *Aquilegia formosa.* The final part will be to map the *Aquilegia formosa* observations onto the elevation map, then zoom in on the range of *Aquilegia formosa.*
+
+Load in the libraries:
+
+```{r}
+library(ggplot2)
+
+library(sf)
+
+library(elevatr)
+
+library(terra)
+
+library(giscoR)
+
+library(leaflet)
+```
+
+Import the *Aquilegia formosa* data:
+
+```{r}
+A_Data <- "https://raw.githubusercontent.com/MiaHuebner/Aquilegia-Distribution-Final-Project/refs/heads/main/Aquilegia_Data_x_World_Clim_Data.txt"
+
+FinalCleanedDataTextVersion <- read.table(A_Data, header = TRUE, sep = "\t")
+```
+
+Create a simple feature from the Aquilegia Data:
+
+```{r}
+Aquilegia_Distribution_sf <- sf::st_as_sf(
+  
+  FinalCleanedDataTextVersion,
+  
+  coords = c("decimalLongitude", "decimalLatitude"), 
+  
+  crs = 4326
+)
+```
+
+Set the geographic area:
+
+```{r}
+crsLONGLAT <- "+proj=longlat +datum=WGS84 +no_defs"
+
+North_America_sf <- giscoR::gisco_get_countries(
+
+  year = "2024", 
+
+  epsg = "4326", 
+
+  resolution = "10", 
+
+  country = c("USA", "Mexico", "Canada")
+
+) |> 
+
+  sf::st_transform(country_sf, crs = crsLONGLAT)
+```
+
+Make the Interactive Map:
+
+```{r}
+leaflet() |> 
+
+  addProviderTiles("Esri.WorldImagery") |> 
+
+  addPolygons(
+
+    data = North_America_sf, 
+
+    fillColor = "transparent",
+
+    color = "black", 
+
+    weight = 1
+
+  ) |>  
+
+  addCircleMarkers(
+
+    data = Aquilegia_Distribution_sf, 
+
+    lng = ~st_coordinates(Aquilegia_Distribution_sf)[, 1], 
+
+    lat = ~st_coordinates(Aquilegia_Distribution_sf)[, 2], 
+
+    radius = 3, 
+
+    fillColor = "red", 
+
+    fillOpacity = 0.7, 
+
+    color = "black", 
+
+    weight = 0.2, 
+
+    popup = ~paste(
+
+      "Species: Aquilegia formosa", "<br>", 
+
+      "Longitude:", st_coordinates(Aquilegia_Distribution_sf)[, 1], "<br>", 
+
+      "Latitude:", st_coordinates(Aquilegia_Distribution_sf)[, 2], "<br>", 
+
+      "Date Observed:", Aquilegia_Distribution_sf$eventDate
+
+    )
+
+  ) |> 
+
+  addLegend(
+
+    position = "topright", 
+
+    colors = "red", 
+
+    opacity = 0.8, 
+
+    labels = "Aquilegia formosa Observations", 
+
+    title = "Aquilegia formosa Distribution"
+
+  ) |> 
+
+  addMiniMap(toggleDisplay = TRUE)
+```
+
+Super cool! The observations of Aquilegia formosa run along the west coast of the US, Canada, and upper Mexico. It seems like that is around the range of the Rocky Mountains, so let's look at the elevation across the US, Canada, and Mexico.
+
+Get the elevation data:
+
+```{r}
+North_America_Elevation <- elevatr::get_elev_raster(
+
+  locations = North_America_sf, 
+
+  z = 2, 
+
+  clip = "locations"
+
+)
+```
+
+Convert data into ggplot-compatible versions for further mapping:
+
+```{r}
+North_America_Elevation_SpatRaster <- terra::rast(North_America_Elevation)
+
+Elevation_DataFrame <- as.data.frame(North_America_Elevation_SpatRaster, xy = TRUE)
+
+colnames(Elevation_DataFrame) <- c("Longitude", "Latitude", "Elevation")
+```
+
+Plot the map of North America showing the elevation data:
+
+```{r}
+ggplot2::ggplot(
+
+  data = Elevation_DataFrame, 
+
+  aes(x = Longitude, y = Latitude, fill = Elevation)) + 
+
+  geom_raster() + 
+
+  scale_fill_gradientn(name = "Elevation (m)",
+
+                       colors = viridis::viridis(n = 100), 
+
+                       limits = c(0, 3500)) + 
+
+  labs(
+
+    title = "Elevation Map of North America", 
+
+    x = "Longitude", 
+
+    y = "Latitude", 
+
+  ) + 
+
+  theme_minimal(base_size = 14) + 
+
+  theme(
+
+    panel.background = element_rect(fill = "gray93"), 
+
+    panel.grid = element_blank(),
+
+    legend.key = element_rect(fill = "white", color = NA)
+
+  ) + 
+
+  coord_sf(
+
+    crs = "+proj=longlat +datum=WGS84 +no_defs", 
+
+    xlim = c(-170, -50), 
+
+    ylim = c(5, 85)
+  )
+```
+
+Add the *Aquilegia formosa* data onto this map:
+
+```{r}
+ggplot2::ggplot(
+
+  data = Elevation_DataFrame) + 
+
+  geom_raster(aes(x = Longitude, y = Latitude, fill = Elevation)) + 
+
+  scale_fill_gradientn(name = "Elevation (m)",
+
+                       colors = viridis::viridis(n = 100), 
+
+                       limits = c(0, 3500)) + 
+
+  geom_sf(data = Aquilegia_Distribution_sf, 
+
+          aes(geometry = geometry), 
+
+          color = "red",
+
+          size = 0.5, 
+
+          alpha = 0.8) +
+
+  labs(
+
+    title = "Aquilegia formosa Distribution with Elevation (m) Across North America",
+
+    x = "Longitude", 
+
+    y = "Latitude"
+
+  ) + 
+
+  theme_minimal(base_size = 14) + 
+
+  theme(
+
+    panel.background = element_rect(fill = "gray93"), 
+
+    panel.grid = element_blank(),
+
+    legend.key = element_rect(fill = "white", color = NA)
+
+  ) + 
+
+  coord_sf(
+
+    crs = "+proj=longlat +datum=WGS84 +no_defs", 
+
+    xlim = c(-170, -50), 
+
+    ylim = c(5, 85)
+  )
+```
+
+Crop the map to show only the range of *Aquilegia formosa:*
+
+```{r}
+ggplot2::ggplot(
+
+  data = Elevation_DataFrame) + 
+
+  geom_raster(aes(x = Longitude, y = Latitude, fill = Elevation)) + 
+
+  scale_fill_gradientn(name = "Elevation (m)",
+
+                       colors = viridis::viridis(n = 100), 
+
+                       limits = c(0, 3500)) + 
+
+  geom_sf(data = Aquilegia_Distribution_sf, 
+
+          aes(geometry = geometry), 
+
+          color = "red",
+
+          size = 0.5, 
+
+          alpha = 0.8) +
+
+  labs(
+
+    title = "Aquilegia formosa Distribution with Elevation (m) Across North America",
+
+    x = "Longitude", 
+
+    y = "Latitude"
+
+  ) + 
+
+  theme_minimal(base_size = 8) + 
+
+  theme(
+
+    panel.background = element_rect(fill = "gray93"), 
+
+    panel.grid = element_blank(),
+
+    legend.key = element_rect(fill = "white", color = NA)
+
+  ) + 
+
+  coord_sf(
+
+    crs = "+proj=longlat +datum=WGS84 +no_defs", 
+
+    xlim = c(-155, -108), 
+
+    ylim = c(29, 64)
+  )
+```
+
+After getting this feel for the data, let's see if I can perform an SDM using the Generalized Linear Model (GLM). This will be attempted in the second quarto document.
